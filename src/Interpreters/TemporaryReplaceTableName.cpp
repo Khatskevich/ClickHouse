@@ -30,4 +30,10 @@ namespace DB
     {
         return getHexUIntLowercase(sipHash64(std::move(database) + std::move(table)));
     }
+
+    std::shared_mutex & getReplaceTableMutex()
+    {
+        static std::shared_mutex mutex;
+        return mutex;
+    }
 }
