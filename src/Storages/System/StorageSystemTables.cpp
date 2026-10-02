@@ -284,6 +284,10 @@ StorageSystemTables::StorageSystemTables(const StorageID & table_id_)
             "(the `TO` target, or the implicit `.inner.*` table). Empty for other engines."
         },
         {"definer", std::make_shared<DataTypeString>(), "SQL security definer's name used for the table."},
+        {"named_collection", std::make_shared<DataTypeNullable>(std::make_shared<DataTypeString>()),
+            "Named collection used to configure an object-storage or object-storage queue table. "
+            "NULL for positional arguments and engines that do not report a named collection."
+        },
     };
 
     description.setAliases({
@@ -563,6 +567,15 @@ protected:
                                     res_columns[res_index]->insertDefault();
                                 }
                                 ++res_index;
+                            }
+                            else if (columns_mask[src_index]
+                                && getPort().getHeader().getByPosition(res_index).name == "named_collection")
+                            {
+                                auto named_collection = table.second->getNamedCollection();
+                                if (named_collection)
+                                    res_columns[res_index++]->insert(*named_collection);
+                                else
+                                    res_columns[res_index++]->insertDefault();
                             }
                             /// Fill the rest columns with defaults
                             else if (columns_mask[src_index])
@@ -1027,6 +1040,15 @@ protected:
                 {
                     if (metadata_snapshot && metadata_snapshot->sql_security_type == SQLSecurityType::DEFINER)
                         res_columns[res_index++]->insert(*metadata_snapshot->definer);
+                    else
+                        res_columns[res_index++]->insertDefault();
+                }
+
+                if (columns_mask[src_index++])
+                {
+                    auto named_collection = table && can_expose_metadata ? table->getNamedCollection() : std::nullopt;
+                    if (named_collection)
+                        res_columns[res_index++]->insert(*named_collection);
                     else
                         res_columns[res_index++]->insertDefault();
                 }

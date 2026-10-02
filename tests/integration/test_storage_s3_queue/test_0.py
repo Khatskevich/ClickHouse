@@ -96,59 +96,94 @@ def started_cluster():
         cluster.shutdown()
 
 
-@pytest.mark.parametrize("engine_name", ["S3Queue", "AzureQueue"])
-@pytest.mark.parametrize("use_named_collection", [False, True])
-def test_named_collection_dependency(started_cluster, engine_name, use_named_collection):
+@pytest.mark.parametrize(
+    "engine_name", ["S3Queue", "AzureQueue", "S3", "AzureBlobStorage"]
+)
+@pytest.mark.parametrize("arguments", ["named", "overrides", "positional"])
+def test_named_collection_reporting(started_cluster, engine_name, arguments):
     node = started_cluster.instances["instance_no_keeper_fault_injection"]
-    table_name = f"named_collection_dependency_{generate_random_string()}"
+    table_name = f"named_collection_reporting_{generate_random_string()}"
     renamed_table = f"{table_name}_renamed"
     collection_name = f"{table_name}_collection"
     files_path = f"{table_name}_data"
 
-    if engine_name == "S3Queue":
-        collection_settings = (
-            f"url = 'http://{started_cluster.minio_host}:{started_cluster.minio_port}/"
-            f"{started_cluster.minio_bucket}/{files_path}/*', "
-            f"access_key_id = 'minio', secret_access_key = '{minio_secret_key}', format = 'CSV'"
+    if engine_name in ("S3Queue", "S3"):
+        url = (
+            f"http://{started_cluster.minio_host}:{started_cluster.minio_port}/"
+            f"{started_cluster.minio_bucket}/{files_path}/*"
         )
+        collection_settings = (
+            f"url = '{url}', access_key_id = 'minio', "
+            f"secret_access_key = '{minio_secret_key}', format = 'CSV' OVERRIDABLE"
+        )
+        positional_arguments = f"'{url}', 'minio', '{minio_secret_key}', 'CSV'"
     else:
+        connection_string = started_cluster.env_variables["AZURITE_CONNECTION_STRING"]
         collection_settings = (
-            f"connection_string = '{started_cluster.env_variables['AZURITE_CONNECTION_STRING']}', "
+            f"connection_string = '{connection_string}', "
             f"container = '{started_cluster.azurite_container}', "
-            f"blob_path = '{files_path}/*', format = 'CSV'"
+            f"blob_path = '{files_path}/*', format = 'CSV' OVERRIDABLE"
         )
+        positional_arguments = f"'{connection_string}', '{started_cluster.azurite_container}', '{files_path}/*', 'CSV'"
+
+    engine_arguments = collection_name
+    if arguments == "overrides":
+        engine_arguments += ", format = 'TSV'"
+    elif arguments == "positional":
+        engine_arguments = positional_arguments
+
+    settings = ""
+    if engine_name in ("S3Queue", "AzureQueue"):
+        settings = (
+            f"SETTINGS mode = 'unordered', keeper_path = '/clickhouse/{table_name}'"
+        )
+
+    def check_reporting(current_table_name):
+        expected_collection = "\\N" if arguments == "positional" else collection_name
+        assert (
+            node.query(
+                "SELECT named_collection, toTypeName(named_collection) FROM system.tables "
+                f"WHERE database = currentDatabase() AND name = '{current_table_name}'"
+            )
+            == f"{expected_collection}\tNullable(String)\n"
+        )
+        assert node.query(
+            "SELECT name FROM system.tables "
+            f"WHERE database = currentDatabase() AND named_collection = '{collection_name}' ORDER BY name"
+        ) == ("" if arguments == "positional" else f"{current_table_name}\n")
 
     node.query(f"CREATE NAMED COLLECTION {collection_name} AS {collection_settings}")
     try:
-        if use_named_collection:
-            node.query(
-                f"CREATE TABLE {table_name} (value UInt32) "
-                f"ENGINE = {engine_name}({collection_name}) "
-                f"SETTINGS mode = 'unordered', keeper_path = '/clickhouse/{table_name}'"
+        node.query(
+            f"CREATE TABLE {table_name} (value UInt32) ENGINE = {engine_name}({engine_arguments}) {settings}"
+        )
+        check_reporting(table_name)
+        if engine_name == "S3":
+            expected_collection = (
+                "\\N" if arguments == "positional" else collection_name
             )
-        else:
-            create_table(
-                started_cluster,
-                node,
-                table_name,
-                "unordered",
-                f"{files_path}/*",
-                engine_name=engine_name,
+            assert (
+                node.query(
+                    f"CREATE TEMPORARY TABLE {table_name}_temporary (value UInt32) "
+                    f"ENGINE = {engine_name}({engine_arguments}); "
+                    "SELECT named_collection FROM system.tables "
+                    f"WHERE is_temporary AND name = '{table_name}_temporary'; "
+                    f"DROP TABLE {table_name}_temporary;"
+                )
+                == f"{expected_collection}\n"
             )
-
-        drop_collection = f"DROP NAMED COLLECTION {collection_name}"
-        if use_named_collection:
-            assert "NAMED_COLLECTION_IS_USED" in node.query_and_get_error(drop_collection)
-
         node.query(f"DETACH TABLE {table_name} SYNC")
         node.query(f"ATTACH TABLE {table_name}")
+        check_reporting(table_name)
         node.query(f"RENAME TABLE {table_name} TO {renamed_table}")
-
-        if use_named_collection:
-            assert "NAMED_COLLECTION_IS_USED" in node.query_and_get_error(drop_collection)
-            node.query(f"DROP TABLE {renamed_table} SYNC")
-
-        node.query(drop_collection)
+        check_reporting(renamed_table)
+        node.query(f"DROP TABLE {renamed_table} SYNC")
+        assert (
+            node.query(
+                f"SELECT count() FROM system.tables WHERE named_collection = '{collection_name}'"
+            )
+            == "0\n"
+        )
     finally:
         node.query(f"DROP TABLE IF EXISTS {table_name} SYNC")
         node.query(f"DROP TABLE IF EXISTS {renamed_table} SYNC")

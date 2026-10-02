@@ -97,6 +97,8 @@ public:
     /// The main name of the table type (e.g. Memory, MergeTree, CollapsingMergeTree).
     virtual std::string getName() const = 0;
 
+    virtual std::optional<String> getNamedCollection() const { return std::nullopt; }
+
     /// The name of the table.
     StorageID getStorageID() const;
 

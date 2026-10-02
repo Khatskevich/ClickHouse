@@ -41,6 +41,8 @@ public:
 
     String getName() const override { return engine_name; }
 
+    std::optional<String> getNamedCollection() const override { return configuration->getNamedCollection(); }
+
     ObjectStorageType getType() { return type; }
 
     void read(

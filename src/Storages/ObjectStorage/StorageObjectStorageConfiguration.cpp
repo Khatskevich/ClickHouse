@@ -1,6 +1,7 @@
 #include <Storages/ObjectStorage/StorageObjectStorageConfiguration.h>
 
 #include <Storages/NamedCollectionsHelpers.h>
+#include <Parsers/ASTIdentifier.h>
 #include <Formats/FormatFactory.h>
 #include <Formats/ReadSchemaUtils.h>
 #include <Storages/ObjectStorage/StorageObjectStorageSink.h>
@@ -183,6 +184,7 @@ void StorageObjectStorageConfiguration::initialize(
     else if (auto named_collection = tryGetNamedCollectionWithOverrides(engine_args, local_context, true, nullptr, table_id))
     {
         configuration_to_initialize.fromNamedCollection(*named_collection, local_context);
+        configuration_to_initialize.named_collection_name = engine_args.front()->as<ASTIdentifier &>().name();
 
         /// A base-URL setting (e.g. `s3_base`) rewrote a relative URL coming from the named
         /// collection. Materialize the resolved URL back into the engine args as a `url='...'`

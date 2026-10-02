@@ -85,6 +85,8 @@ public:
 
     using Paths = std::vector<Path>;
 
+    std::optional<String> getNamedCollection() const { return named_collection_name; }
+
     /// Initialize configuration from either AST or NamedCollection.
     static void initialize(
         StorageObjectStorageConfiguration & configuration_to_initialize,
@@ -426,6 +428,7 @@ protected:
     String schema_hash;
 
 private:
+    std::optional<String> named_collection_name;
     // Path used for reading, by default it is the same as `getRawPath`
     // When using `partition_strategy=hive`, a recursive reading pattern will be appended `'table_root/**.parquet'
     Path read_path;

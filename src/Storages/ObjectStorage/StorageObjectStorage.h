@@ -65,6 +65,8 @@ public:
 
     String getName() const override;
 
+    std::optional<String> getNamedCollection() const override { return configuration->getNamedCollection(); }
+
     /// The concrete data format resolved for this table (after schema/format inference).
     /// Used by the unified `URL` engine to persist the delegate's inferred format.
     String getFormatName() const { return configuration->format; }
