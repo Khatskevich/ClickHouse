@@ -9,6 +9,7 @@ from minio.commonconfig import Tags
 
 from helpers.client import QueryRuntimeException
 from helpers.cluster import ClickHouseCluster
+from helpers.config_cluster import minio_secret_key
 from helpers.s3_queue_common import (
     generate_random_files,
     put_s3_file_content,
@@ -93,6 +94,65 @@ def started_cluster():
         yield cluster
     finally:
         cluster.shutdown()
+
+
+@pytest.mark.parametrize("engine_name", ["S3Queue", "AzureQueue"])
+@pytest.mark.parametrize("use_named_collection", [False, True])
+def test_named_collection_dependency(started_cluster, engine_name, use_named_collection):
+    node = started_cluster.instances["instance_no_keeper_fault_injection"]
+    table_name = f"named_collection_dependency_{generate_random_string()}"
+    renamed_table = f"{table_name}_renamed"
+    collection_name = f"{table_name}_collection"
+    files_path = f"{table_name}_data"
+
+    if engine_name == "S3Queue":
+        collection_settings = (
+            f"url = 'http://{started_cluster.minio_host}:{started_cluster.minio_port}/"
+            f"{started_cluster.minio_bucket}/{files_path}/*', "
+            f"access_key_id = 'minio', secret_access_key = '{minio_secret_key}', format = 'CSV'"
+        )
+    else:
+        collection_settings = (
+            f"connection_string = '{started_cluster.env_variables['AZURITE_CONNECTION_STRING']}', "
+            f"container = '{started_cluster.azurite_container}', "
+            f"blob_path = '{files_path}/*', format = 'CSV'"
+        )
+
+    node.query(f"CREATE NAMED COLLECTION {collection_name} AS {collection_settings}")
+    try:
+        if use_named_collection:
+            node.query(
+                f"CREATE TABLE {table_name} (value UInt32) "
+                f"ENGINE = {engine_name}({collection_name}) "
+                f"SETTINGS mode = 'unordered', keeper_path = '/clickhouse/{table_name}'"
+            )
+        else:
+            create_table(
+                started_cluster,
+                node,
+                table_name,
+                "unordered",
+                f"{files_path}/*",
+                engine_name=engine_name,
+            )
+
+        drop_collection = f"DROP NAMED COLLECTION {collection_name}"
+        if use_named_collection:
+            assert "NAMED_COLLECTION_IS_USED" in node.query_and_get_error(drop_collection)
+
+        node.query(f"DETACH TABLE {table_name} SYNC")
+        node.query(f"ATTACH TABLE {table_name}")
+        node.query(f"RENAME TABLE {table_name} TO {renamed_table}")
+
+        if use_named_collection:
+            assert "NAMED_COLLECTION_IS_USED" in node.query_and_get_error(drop_collection)
+            node.query(f"DROP TABLE {renamed_table} SYNC")
+
+        node.query(drop_collection)
+    finally:
+        node.query(f"DROP TABLE IF EXISTS {table_name} SYNC")
+        node.query(f"DROP TABLE IF EXISTS {renamed_table} SYNC")
+        node.query(f"DROP NAMED COLLECTION IF EXISTS {collection_name}")
 
 
 def wait_for_queue_log_rows(node, engine_name, table_name, keeper_path, expected, timeout=60):
